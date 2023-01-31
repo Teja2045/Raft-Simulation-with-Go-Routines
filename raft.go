@@ -164,7 +164,7 @@ func (n *Node) run() {
 			n.mu.Unlock()
 		}
 	}
-	fmt.Println(n.id, " is stopped for some reason")
+	//fmt.Println(n.id, " is stopped for some reason")
 }
 
 func main() {
@@ -196,26 +196,8 @@ func main() {
 
 	// run nodes in separate goroutines
 	for _, node := range nodes {
-		go node.run(ch)
+		go node.run()
 	}
-
-	// go func() {
-	// 	reader := bufio.NewReader(os.Stdin)
-	// 	for {
-	// 		fmt.Print("Enter a value: ")
-	// 		text, _ := reader.ReadString('\n')
-
-	// 		// Convert the input string to an integer
-	// 		value, err := strconv.Atoi(text)
-	// 		if err != nil {
-	// 			fmt.Println("Invalid input. Please enter an integer.")
-	// 			continue
-	// 		}
-
-	// 	// Send the value to the channel
-	// 		ch <- value
-	// 	}
-	// }(ch)
 
 	select {}
 }
