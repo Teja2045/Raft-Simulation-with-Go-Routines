@@ -1,3 +1,7 @@
+# Raft-Simulation-with-Go-Routines
+
+
+ 
  It is a simple simulation of raft protocol leader selection algorithm with Go routines and channels
     
 ## Installation:
@@ -34,7 +38,7 @@
 
 
 ## Note:
-- Note-1: Replicated state is not implemented
+- Note-1: Replicated Log is not implemented
 
 - Note-2: Might exhibit weird behavior as routine's runtime is uncontrollable
         
