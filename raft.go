@@ -13,22 +13,21 @@ const (
 	LEADER    = 2
 )
 
-type Node struct {
-	mu sync.Mutex
+var interrupt = false
 
+type Node struct {
 	id    int
 	peers []*Node
 
-	state       int
-	term        int
-	voteGranted bool
-	leaderID    int
+	state    int
+	term     int
+	leaderID int
 
 	value int
 
 	electionTimeout         time.Duration
 	heartbeatTimeout        time.Duration
-	recieveHeartBeatTimeout time.Duration
+	receiveHeartBeatTimeout time.Duration
 	heartbeatCh             chan *HeartBeat
 	voteRequestCh           chan *RequestVote
 	voteCh                  chan bool
@@ -36,8 +35,8 @@ type Node struct {
 }
 
 type HeartBeat struct {
-	id  int
-	val int
+	id   int
+	term int
 }
 
 type RequestVote struct {
@@ -46,62 +45,146 @@ type RequestVote struct {
 	responseChannel chan bool
 }
 
-//ch := make(chan int)
-
 func (n *Node) run() {
+
+	time.Sleep(1000 * time.Millisecond)
 
 	fmt.Println("starting for node ", n.id)
 	for {
 
-		fmt.Println(n.id, " has a value of ", n.value)
-
 		switch n.state {
 
 		case FOLLOWER:
-			fmt.Println(n.id, " is a follower")
 
-			select {
-			case beat := <-n.heartbeatCh:
-
-				fmt.Println(n.id, " recieved beat from..", beat.id)
-				n.leaderID = beat.id
-				n.value = beat.val
-				fmt.Println("value of node ", n.id, " is ", n.value)
-				fmt.Println("node ", n.id, " timer is resetting...")
-				n.timeout = time.Duration(n.recieveHeartBeatTimeout)
-
-			case req := <-n.voteRequestCh:
-				fmt.Println(n.id, " recieved a vote request..")
-				if req.term > n.term && !n.voteGranted {
-					req.responseChannel <- true
-				} else {
-					req.responseChannel <- false
+			fmt.Println(n.id, " is a FOLLOWER	")
+			for {
+				if n.state != FOLLOWER {
+					break
 				}
+				select {
+				case beat := <-n.heartbeatCh:
+					fmt.Println(n.id, " follower received heartBeat from ", beat.id, " with term ", beat.term, "!")
+					if beat.term >= n.term {
+						n.leaderID = beat.id
+						n.term = beat.term
 
-			case <-time.After(n.timeout):
-				n.mu.Lock()
-				n.state = CANDIDATE
-				n.mu.Unlock()
+						fmt.Println("node ", n.id, " follower's timer is resetting...")
+						n.timeout = time.Duration(n.receiveHeartBeatTimeout)
+					}
 
-			case req := <-n.voteRequestCh:
-				if req.term > n.term {
-					req.responseChannel <- true
-				} else {
-					req.responseChannel <- false
+				case voteRequest := <-n.voteRequestCh:
+					requestTerm := voteRequest.term
+					requestCandidate := voteRequest.candidateID
+					requestVotingChannel := voteRequest.responseChannel
+					if requestTerm > n.term {
+						fmt.Println("node ", n.id, " follower voted for ", requestCandidate)
+						requestVotingChannel <- true
+						n.term = voteRequest.term
+						n.leaderID = requestCandidate
+
+						fmt.Println("node ", n.id, "follower's timer is resetting due to voting...")
+						n.timeout = time.Duration(n.receiveHeartBeatTimeout)
+
+					} else {
+						fmt.Println(n.id, " follower rejected ", requestCandidate)
+						requestVotingChannel <- false
+					}
+
+				case <-time.After(n.timeout):
+					fmt.Println(n.id, " follower is timed out!!!! its going to be a candidate")
+					n.state = CANDIDATE
 				}
 			}
 
 		case CANDIDATE:
 			fmt.Println(n.id, " became a candidate")
-			n.mu.Lock()
+			fmt.Println(n.id, " candidate's previous term: ", n.term)
 			n.term++
-			//n.voteGranted = 1
-			n.mu.Unlock()
+			fmt.Println(n.id, " candidate's terms incremented term: ", n.term)
+			successfulVoteChannel := make(chan RequestVote)
+			allVotesChannel := make(chan bool)
+			validHeartBeatCh := make(chan HeartBeat)
+			exit := false
+			var waitGroup sync.WaitGroup
+
+			go func(validHeartBeatCh chan HeartBeat) {
+				fmt.Println(n.id, " candidate's candidate heart beat routines is started...")
+				waitGroup.Add(1)
+				for {
+					if n.state != CANDIDATE || exit {
+						break
+					}
+					select {
+					case heartBeat := <-n.heartbeatCh:
+						if heartBeat.term >= n.term {
+							fmt.Println(n.id, " candidate received valid heart beat from ", heartBeat.id, " with term ", heartBeat.term)
+							validHeartBeatCh <- *heartBeat
+						} else {
+							fmt.Println(n.id, " received invalid heart beat from ", heartBeat.id)
+						}
+					default:
+					}
+				}
+				waitGroup.Done()
+				fmt.Println(n.id, " candidate's candidate hearbeat routines is stopped...")
+			}(validHeartBeatCh)
+
+			go func(allVotesChannel chan bool) {
+				fmt.Println(n.id, " candidate's candidate votes counting go routine is started...")
+				waitGroup.Add(1)
+				votesCount := 1
+				rejectCount := 0
+				for {
+					if votesCount > 2 {
+						allVotesChannel <- true
+						break
+					}
+					if n.state != CANDIDATE || exit {
+						break
+					}
+					select {
+					case response := <-n.voteCh:
+						if response {
+							votesCount++
+							fmt.Println(n.id, " candidate got a vote! Voted=", votesCount, " Rejected=", rejectCount)
+						} else {
+							rejectCount++
+							fmt.Println(n.id, " candidate got a rejection! Voted=", votesCount, " Rejected=", rejectCount)
+						}
+					default:
+					}
+				}
+				waitGroup.Done()
+				fmt.Println(n.id, " candidate's candidate votes counting go routine is stopped...")
+			}(allVotesChannel)
+
+			go func(successfulVoteChannel chan RequestVote) {
+				fmt.Println(n.id, " candidate's voting request go routine is started...")
+				waitGroup.Add(1)
+				for {
+					if n.state != CANDIDATE || exit {
+						break
+					}
+					select {
+					case voteRequest := <-n.voteRequestCh:
+						fmt.Println(n.id, " candidate routine received a vote request from ", voteRequest.candidateID, "with term ", voteRequest.term)
+						if voteRequest.term > n.term {
+							successfulVoteChannel <- *voteRequest
+						} else {
+							voteRequest.responseChannel <- false
+						}
+					case <-time.After(n.electionTimeout):
+						fmt.Println(n.id, ": no request yet for candidate...")
+					}
+				}
+				waitGroup.Done()
+				fmt.Println(n.id, " candidate's voting request go routine is stopped...")
+			}(successfulVoteChannel)
 
 			for _, peer := range n.peers {
 
 				go func(peer *Node) {
-					fmt.Println(n.id, "is requesting", peer.id)
+					fmt.Println(n.id, " candidate is requesting", peer.id)
 
 					peer.voteRequestCh <- &RequestVote{
 						term:            n.term,
@@ -111,64 +194,145 @@ func (n *Node) run() {
 				}(peer)
 			}
 
-			// wait for votes
-			votesReceived := 1
-			for votesReceived < len(n.peers)/2+1 {
-				select {
-				case <-n.voteCh:
-					votesReceived++
+			electionTimeout := time.Duration(n.electionTimeout)
 
-				case beat := <-n.heartbeatCh:
-					// received heartbeat from leader, become follower
-					//fmt.Println(n.id)
-					n.mu.Lock()
+			for {
+				if n.state != CANDIDATE || exit {
+					break
+				}
+				select {
+				case beat := <-validHeartBeatCh:
+					fmt.Println(n.id, " candidate received a valid hear beat", beat, "! Its going to become a follower")
+					n.term = beat.term
 					n.leaderID = beat.id
 					n.state = FOLLOWER
-					n.mu.Unlock()
-					goto end
+					n.voteCh = make(chan bool, 10)
+					n.electionTimeout = resetElectionTimeout()
+					n.voteRequestCh = make(chan *RequestVote, 10)
+					exit = true
 
-				case req := <-n.voteRequestCh:
-					if req.term > n.term {
-						req.responseChannel <- true
-					} else {
-						req.responseChannel <- false
+				case requestVote := <-successfulVoteChannel:
+					fmt.Println(n.id, "candidate received a higher term voting request with term", requestVote.term, " from ", requestVote.candidateID, "! Its going to become a follower")
+					n.term = requestVote.term
+					n.leaderID = requestVote.candidateID
+					requestVote.responseChannel <- true
+					n.state = FOLLOWER
+					n.voteCh = make(chan bool, 10)
+					n.electionTimeout = resetElectionTimeout()
+					n.voteRequestCh = make(chan *RequestVote, 10)
+					exit = true
+
+				case <-allVotesChannel:
+					fmt.Println(n.id, "candidate received enough votes", "! Its going to become a Leader")
+					n.leaderID = n.id
+					n.state = LEADER
+					n.voteCh = make(chan bool, 10)
+					n.electionTimeout = resetElectionTimeout()
+					n.voteRequestCh = make(chan *RequestVote, 10)
+
+				case <-time.After(electionTimeout):
+					fmt.Println(n.id, "candidate election is timed out", "! Its going to restart election")
+					n.electionTimeout = resetElectionTimeout()
+					n.voteCh = make(chan bool, 10)
+					n.voteRequestCh = make(chan *RequestVote, 10)
+					exit = true
+				}
+
+			}
+			// wait until all routines are done
+			waitGroup.Wait()
+			fmt.Println(n.id, " is exiting candidate State")
+
+		case LEADER:
+			fmt.Println(n.id, ": is a LEADER!")
+			var waitGroup sync.WaitGroup
+
+			waitGroup.Add(1)
+
+			go func(node *Node) {
+				fmt.Println(n.id, " leader's vote request routine is started...")
+				for {
+					if node.state != LEADER {
+						break
+					}
+					select {
+					case voteRequest := <-node.voteRequestCh:
+						requestTerm := voteRequest.term
+						requestCandidate := voteRequest.candidateID
+						requestVotingChannel := voteRequest.responseChannel
+						fmt.Println(node.id, " leader received a vote request with term: ", requestTerm, " from ", requestCandidate)
+						if requestTerm > node.term {
+							node.term = requestTerm
+							requestVotingChannel <- true
+							node.leaderID = requestCandidate
+							node.state = FOLLOWER
+						}
+
+					case heartBeat := <-n.heartbeatCh:
+						if heartBeat.term > node.term {
+							node.term = heartBeat.term
+							node.leaderID = heartBeat.id
+							node.state = FOLLOWER
+						}
+
+					default:
 					}
 				}
-			}
-		end:
+				waitGroup.Done()
+				fmt.Println(n.id, " leader's vote request routine is stopped...")
+			}(n)
 
-			// become leader
-			n.mu.Lock()
-			n.state = LEADER
-			n.leaderID = n.id
-			n.mu.Unlock()
-		case LEADER:
-			// send heartbeat to followers
-			n.mu.Lock()
-			fmt.Println(n.id, "is leader")
-			fmt.Println(n.id, "is ressetting all other peers so that there wont be multiple leaders...")
-			for _, peer := range n.peers {
-				go func(peer *Node) {
-					peer.mu.Lock()
-					peer.state = FOLLOWER
-					fmt.Println(n.id, " leader is sending heartbeat to follower ", peer.id)
-					peer.heartbeatCh <- &HeartBeat{
-						id:  n.id,
-						val: 6,
-					}
-					peer.mu.Unlock()
-				}(peer)
-			}
+			for {
 
-			time.Sleep(n.heartbeatTimeout)
-			n.mu.Unlock()
+				if interrupt {
+					interrupt = false
+					n.state = FOLLOWER
+					fmt.Println(n.id, "leader node is malfunctioned -----------------------X!")
+					time.Sleep(20000 * time.Millisecond)
+					fmt.Println(n.id, "node is recovered after malfunction -------------------O!")
+				}
+				if n.state != LEADER {
+					fmt.Println("leader ", n.id, " became a FOLLOWER!")
+					break
+				}
+
+				fmt.Println(n.id, " leader is starting to send Heart Beats !")
+
+				for _, peer := range n.peers {
+					go func(peer *Node) {
+						fmt.Println(n.id, " leader is sending heartbeat to follower ", peer.id)
+						peer.heartbeatCh <- &HeartBeat{
+							id:   n.id,
+							term: n.term,
+						}
+					}(peer)
+				}
+
+				fmt.Println(n.id, " leader heart beat timeout started..")
+				time.Sleep(n.heartbeatTimeout)
+				fmt.Println(n.id, " leader heart beat timeout ended..")
+			}
+			waitGroup.Wait()
+			fmt.Println(n.id, " leader is exiting leader state!")
 		}
 	}
 	//fmt.Println(n.id, " is stopped for some reason")
 }
 
+func resetElectionTimeout() time.Duration {
+	return time.Duration(time.Duration(rand.Intn(35000)+150) * time.Millisecond)
+}
+
+func resetReceiveHearBeatTimeout() time.Duration {
+	return time.Duration(time.Duration(rand.Intn(50000)+150) * time.Millisecond)
+}
+
+func resetHeartBeatBroadCastTimeout() time.Duration {
+	return time.Duration(time.Duration(rand.Intn(5000)+15) * time.Millisecond)
+}
+
 func main() {
-	// initialize nodes
+
 	nodes := []*Node{}
 	for i := 0; i < 5; i++ {
 		node := &Node{
@@ -177,24 +341,29 @@ func main() {
 			leaderID:                0,
 			term:                    0,
 			value:                   -1,
-			electionTimeout:         time.Duration(rand.Intn(150)+150) * time.Millisecond,
-			heartbeatTimeout:        50 * time.Millisecond,
-			recieveHeartBeatTimeout: 500 * time.Millisecond,
-			voteGranted:             false,
+			electionTimeout:         resetElectionTimeout(),
+			heartbeatTimeout:        resetHeartBeatBroadCastTimeout(),
+			receiveHeartBeatTimeout: resetReceiveHearBeatTimeout(),
+			voteCh:                  make(chan bool, 10),
+			heartbeatCh:             make(chan *HeartBeat),
 			voteRequestCh:           make(chan *RequestVote),
-			voteCh:                  make(chan bool),
 		}
 		nodes = append(nodes, node)
 	}
-	nodes[0].state = LEADER
 
-	// set up peer relationships
+	go func() {
+		for {
+			time.Sleep(50000 * time.Millisecond)
+			fmt.Println("INTERRUPT! INTERRUPT! INTERRUPT! INTERRUPT! INTERRUPT! /nINTERRUPT! INTERRUPT! INTERRUPT! INTERRUPT! INTERRUPT! /n INTERRUPT! INTERRUPT! INTERRUPT! INTERRUPT! INTERRUPT!")
+			interrupt = true
+		}
+	}()
+
 	for i, node := range nodes {
 		node.peers = append(node.peers, nodes[:i]...)
 		node.peers = append(node.peers, nodes[i+1:]...)
 	}
 
-	// run nodes in separate goroutines
 	for _, node := range nodes {
 		go node.run()
 	}
