@@ -50,5 +50,23 @@
 
         Note: any suggestions and advices are welcomed! Please make a pull request or create an issue to discuss more!
         
+## To run through a docker image:
+- Clone this repository.
+- cd to the directory containing the Dockerfile.
+- Build the docker image using the following command:
+```bash
+    docker build -t raft_simulation_with_go_routines .
+```
+- Run the following command to the start the built image in the previous step:
+```bash
+  docker run -it --name raft_simulation_container raft_simulation_with_go_routines
+```
+
+
+
+
+
+
+
 # Thank you!
     
